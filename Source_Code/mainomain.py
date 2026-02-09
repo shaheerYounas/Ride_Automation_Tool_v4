@@ -932,72 +932,171 @@ def scrape_current_view(driver, processed_list):
             
     return rides_found
 
-def fetch_gete_rides(driver, processed_list):
-    print("\n--- STARTING SOURCE C: GET-E ---")
-    driver.get(GETE_LOGIN_URL)
-    time.sleep(3)
-    
-    # --- 1. LOGIN ---
-    print("   -> Checking Login Status...")
-    try:
-        try:
-            WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
-            is_login_page = True
-        except:
-            is_login_page = False
+# ==========================================
+# 5. SOURCE C: GET-E (API INJECTION MODE)
+# ==========================================
 
-        if is_login_page:
-            print("   -> Login Required. Entering credentials...")
-            user_in = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='email']")))
+def fetch_gete_rides(driver, processed_list):
+    print("\n--- STARTING SOURCE C: GET-E (API MODE) ---")
+    driver.get(GETE_LOGIN_URL)
+    time.sleep(5)
+    
+    # --- 1. LOGIN CHECK ---
+    if "login" in driver.current_url or "signin" in driver.current_url:
+        print("   -> 🔑 Login Required. Entering credentials...")
+        try:
+            wait = WebDriverWait(driver, 10)
+            user_in = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']")))
             user_in.clear()
             user_in.send_keys(GETE_EMAIL)
             
             pass_in = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
             pass_in.clear()
             pass_in.send_keys(GETE_PASS)
-            
-            try:
-                login_btn = driver.find_element(By.XPATH, "//button[contains(., 'Sign in') or contains(., 'Log in')]")
-                login_btn.click()
-            except:
-                pass_in.send_keys(Keys.RETURN)
+            pass_in.send_keys(Keys.RETURN)
             
             WebDriverWait(driver, 20).until(EC.url_contains("rides"))
             time.sleep(5)
-            print("   -> Login Successful.")
-    except Exception as e:
-        print(f"   ⚠️ Login Check Error: {e}")
+            print("   -> ✅ Login Successful.")
+        except Exception as e:
+            print(f"   ⚠️ Login failed or timed out: {e}")
 
-    # --- 2. RESET FILTERS ---
+    # --- 2. INJECT API REQUEST ---
+    print("   -> ⚡ Fetching 'Confirmed' & 'To Confirm' rides...")
+    
+    # URL matches the one verified in your sniffer test
+    # Statuses: TO_CONFIRM, CONFIRMED, and TO_CONFIRM_CHANGE (found in your JSON)
+    api_url = "https://portal.get-e.com/portal-api/trips?query=&limit=100&statusFilters[]=TO_CONFIRM&statusFilters[]=CONFIRMED&statusFilters[]=TO_CONFIRM_CHANGE"
+    
+    js_script = """
+    var callback = arguments[arguments.length - 1];
+    
+    fetch(arguments[0], {
+        method: 'GET',
+        credentials: 'include',  # CORS Bypass
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => response.json())
+    .then(data => callback(data))
+    .catch(err => callback({'error': err.toString()}));
+    """
+    
     try:
-        reset_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Reset filters')]")))
-        driver.execute_script("arguments[0].click();", reset_btn)
-        time.sleep(3)
-        print("   -> 🔄 Filters reset.")
-    except: pass
-
-    all_rides = []
-
-    # --- 3. PROCESS 'TO CONFIRM' TAB ---
-    try:
-        ensure_only_tab_active(driver, "To confirm")
-        print("   -> 🟢 Scraping 'To confirm' tab...")
-        rides = scrape_current_view(driver, processed_list)
-        all_rides.extend(rides)
+        response = driver.execute_async_script(js_script, api_url)
     except Exception as e:
-        print(f"   ⚠️ Error processing 'To confirm': {e}")
+        print(f"   ❌ Execution Error: {e}")
+        return []
 
-    # --- 4. PROCESS 'CONFIRMED' TAB ---
-    try:
-        ensure_only_tab_active(driver, "Confirmed")
-        print("   -> 🔵 Scraping 'Confirmed' tab...")
-        rides = scrape_current_view(driver, processed_list)
-        all_rides.extend(rides)
-    except Exception as e:
-        print(f"   ⚠️ Error processing 'Confirmed': {e}")
+    # --- 3. PARSE RESULTS ---
+    if isinstance(response, dict) and 'error' in response:
+        print(f"   ❌ API Error: {response['error']}")
+        return []
 
-    print(f"   -> Found {len(all_rides)} new rides from Get-e.")
-    return all_rides
+    raw_rides = []
+    if isinstance(response, list):
+        raw_rides = response
+    elif isinstance(response, dict):
+        raw_rides = response.get('content') or response.get('data') or response.get('trips') or []
+
+    print(f"   -> Found {len(raw_rides)} total active rides.")
+    
+    rides_found = []
+    
+    for r in raw_rides:
+        try:
+            # 1. ID Check
+            r_id = str(r.get('unid', ''))
+            if not r_id: r_id = r.get('prettifiedUnid', '').replace('-', '')
+            
+            if r_id in processed_list:
+                continue
+            
+            # Skip duplicates in current batch
+            if any(x['id'] == r_id for x in rides_found):
+                continue
+
+            # 2. Date Parsing
+            # JSON format: "2026-02-13T12:20:00+00:00" -> We slice first 19 chars for cleaner datetime
+            raw_date = r.get('pickUp', {}).get('departAtLocal', '')
+            if len(raw_date) >= 19:
+                full_dt_str = raw_date[:19] 
+            else:
+                continue 
+
+            # 3. Passenger Info
+            passengers = r.get('passengers', [])
+            if passengers:
+                p = passengers[0]
+                # Combine First+Last and strip whitespace
+                name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
+                phone = p.get('phone', '')
+            else:
+                name = "Unknown Passenger"
+                phone = ""
+
+            # 4. Locations & Flight
+            # Pickup
+            pickup_obj = r.get('pickUp', {}).get('location', {})
+            pickup = pickup_obj.get('name', '')
+            # If name is generic like "PRG", check type or address
+            if pickup_obj.get('type') == 'AIRPORT' and not pickup:
+                pickup = "Airport"
+            elif pickup_obj.get('address') and pickup_obj.get('address') not in pickup:
+                pickup += f", {pickup_obj.get('address')}"
+
+            # Dropoff
+            dropoff_obj = r.get('dropOff', {}).get('location', {})
+            dropoff = dropoff_obj.get('name', '')
+            if dropoff_obj.get('address') and dropoff_obj.get('address') not in dropoff:
+                dropoff += f", {dropoff_obj.get('address')}"
+
+            flight = r.get('flightDetails', {}).get('number', '')
+            
+            # 5. Vehicle Mapping
+            veh_name = r.get('vehicle', {}).get('name', 'Standard')
+            veh_type = r.get('vehicle', {}).get('type', '')
+            combined_veh = (veh_name + " " + veh_type).upper()
+            
+            vehicle = "Standard"
+            if "BUSINESS" in combined_veh or "EXECUTIVE" in combined_veh:
+                vehicle = "Business"
+            elif "VAN" in combined_veh or "MINIVAN" in combined_veh or "PEOPLE" in combined_veh:
+                vehicle = "Minivan"
+
+            # 6. Notes
+            special_req = r.get('specialRequest', '')
+            notes_supp = r.get('notesToSupplier', '')
+            full_note = f"GETE-{r_id} | {special_req} {notes_supp}".strip().replace("\n", " ")
+
+            # 7. Normalize
+            normalized_ride = {
+                "source": "GETE",
+                "id": r_id,
+                "pickup_dt_raw": full_dt_str,
+                "name": name,
+                "phone": phone,
+                "pax": r.get('numberOfPassengers', 1),
+                "luggage": r.get('numberOfBags', 0),
+                "pickup_addr": pickup,
+                "dropoff_addr": dropoff,
+                "vehicle_raw": vehicle,
+                "driver_note": full_note[:200], # Truncate note if too long
+                "flight": flight,
+                "inbound_hint": True if "AIRPORT" in pickup.upper() else False
+            }
+            
+            rides_found.append(normalized_ride)
+            print(f"      + NEW: {r_id} | {full_dt_str} | {name}")
+
+        except Exception as e:
+            print(f"      ⚠️ Error parsing ride: {e}")
+            continue
+
+    print(f"   -> Processed {len(rides_found)} valid new rides.")
+    return rides_found
 
 # ==========================================
 # 6. DESTINATION: ACCOMMTRA
