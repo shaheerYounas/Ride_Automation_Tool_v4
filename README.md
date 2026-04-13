@@ -21,7 +21,7 @@ _Seamlessly synchronize ride orders from Transferz & Koi Ride into Accommtra_
 <div align="center">
 
 ```
-┌─────────────┐     ┌─────────────┐
+       ┌─────────────┐     ┌─────────────┐
 │  Transferz  │     │  Koi Ride   │
 │   (50 max)  │     │  (2 days)   │
 └──────┬──────┘     └──────┬──────┘
