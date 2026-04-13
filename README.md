@@ -58,28 +58,6 @@ _Seamlessly synchronize ride orders from Transferz & Koi Ride into Accommtra_
 
 > **📍 Important:** All settings are at the top of `main.py` for easy updates.
 
-### 🔑 Credentials
-
-```python
-# ═══════════════════════════════════════
-#            TRANSFERZ
-# ═══════════════════════════════════════
-TZ_EMAIL = "haytham97@live.com"
-TZ_PASS  = "ZEuoHFzP78cp"
-
-# ═══════════════════════════════════════
-#             KOI RIDE
-# ═══════════════════════════════════════
-KOI_USER = "Haytham Montana"
-KOI_PASS = "montana123"
-
-# ═══════════════════════════════════════
-#            ACCOMMTRA
-# ═══════════════════════════════════════
-DEST_EMAIL = "haytham97@live.com"
-DEST_PASS  = "tham97"
-```
-
 ### 🏢 Contractor IDs
 
 | Platform  | ID    | Label |
